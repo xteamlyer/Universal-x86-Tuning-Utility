@@ -1,0 +1,94 @@
+name: Universal x86 Tuning Utility Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uxtu-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build UXTU (Windows x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Locate application project
+        id: project
+        shell: pwsh
+        run: |
+          $project = Get-ChildItem -Path . -Recurse -Filter "Universal x86 Tuning Utility.csproj" |
+            Where-Object {
+              $_.FullName -notmatch '\\(bin|obj)\\'
+            } |
+            Select-Object -First 1
+
+          if (-not $project) {
+            throw "Application project was not found."
+          }
+
+          Write-Host "Project: $($project.FullName)"
+          "path=$($project.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Restore dependencies
+        run: dotnet restore "${{ steps.project.outputs.path }}" --runtime win-x64
+
+      - name: Publish application
+        shell: pwsh
+        run: |
+          dotnet publish "${{ steps.project.outputs.path }}" `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --no-restore `
+            -p:Platform=x64 `
+            -p:PublishSingleFile=false `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            --output "${{ github.workspace }}\artifacts\UXTU-Portable"
+
+      - name: Create portable archive
+        shell: pwsh
+        run: |
+          $source = "${{ github.workspace }}\artifacts\UXTU-Portable"
+          $archive = "${{ github.workspace }}\artifacts\UXTU-Portable-win-x64.zip"
+
+          if (-not (Get-ChildItem $source -Filter "*.exe" -File)) {
+            throw "No executable was found in publish output."
+          }
+
+          Compress-Archive -Path "$source\*" -DestinationPath $archive -CompressionLevel Optimal
+
+      - name: Upload portable application
+        uses: actions/upload-artifact@v4
+        with:
+          name: UXTU-Portable-win-x64-${{ github.sha }}
+          path: artifacts/UXTU-Portable-win-x64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: UXTU-Build-Output-win-x64-${{ github.sha }}
+          path: artifacts/UXTU-Portable/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 14
