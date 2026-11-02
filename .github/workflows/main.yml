@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build UXTU (Windows x64)
+    name: Build UXTU Portable (Windows x64)
     runs-on: windows-latest
 
     steps:
@@ -23,72 +23,113 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup .NET 10 SDK
+      - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
-      - name: Locate application project
-        id: project
+      - name: Validate dependencies
         shell: pwsh
         run: |
-          $project = Get-ChildItem -Path . -Recurse -Filter "Universal x86 Tuning Utility.csproj" |
-            Where-Object {
-              $_.FullName -notmatch '\\(bin|obj)\\'
-            } |
-            Select-Object -First 1
+          $project = "Universal x86 Tuning Utility/Universal x86 Tuning Utility.csproj"
+          $autoOC = "Dependencies/AutoOC.dll"
 
-          if (-not $project) {
-            throw "Application project was not found."
+          if (!(Test-Path $project)) {
+            throw "UXTU project not found: $project"
           }
 
-          Write-Host "Project: $($project.FullName)"
-          "path=$($project.FullName)" >> $env:GITHUB_OUTPUT
+          if (!(Test-Path $autoOC)) {
+            throw "AutoOC.dll not found: $autoOC"
+          }
+
+          Write-Host "UXTU project: OK"
+          Write-Host "AutoOC dependency: OK"
 
       - name: Restore dependencies
-        run: dotnet restore "${{ steps.project.outputs.path }}" --runtime win-x64
-
-      - name: Publish application
         shell: pwsh
         run: |
-          dotnet publish "${{ steps.project.outputs.path }}" `
+          $project = "Universal x86 Tuning Utility/Universal x86 Tuning Utility.csproj"
+          $autoOC = Join-Path $env:GITHUB_WORKSPACE "Dependencies/AutoOC.dll"
+
+          dotnet restore $project `
+            --runtime win-x64 `
+            "-p:AutoOcPath=$autoOC"
+
+      - name: Publish UXTU
+        shell: pwsh
+        run: |
+          $project = "Universal x86 Tuning Utility/Universal x86 Tuning Utility.csproj"
+          $autoOC = Join-Path $env:GITHUB_WORKSPACE "Dependencies/AutoOC.dll"
+          $output = Join-Path $env:GITHUB_WORKSPACE "artifacts/UXTU-Portable"
+
+          dotnet publish $project `
             --configuration Release `
             --runtime win-x64 `
             --self-contained true `
             --no-restore `
             -p:Platform=x64 `
+            "-p:AutoOcPath=$autoOC" `
             -p:PublishSingleFile=false `
             -p:DebugType=None `
             -p:DebugSymbols=false `
             -p:IncludeNativeLibrariesForSelfExtract=true `
-            --output "${{ github.workspace }}\artifacts\UXTU-Portable"
+            --output $output
 
-      - name: Create portable archive
-        shell: pwsh
-        run: |
-          $source = "${{ github.workspace }}\artifacts\UXTU-Portable"
-          $archive = "${{ github.workspace }}\artifacts\UXTU-Portable-win-x64.zip"
-
-          if (-not (Get-ChildItem $source -Filter "*.exe" -File)) {
-            throw "No executable was found in publish output."
+          if ($LASTEXITCODE -ne 0) {
+            throw "UXTU publish failed."
           }
 
-          Compress-Archive -Path "$source\*" -DestinationPath $archive -CompressionLevel Optimal
+      - name: Ensure AutoOC dependency
+        shell: pwsh
+        run: |
+          $source = "Dependencies/AutoOC.dll"
+          $destination = "artifacts/UXTU-Portable/AutoOC.dll"
 
-      - name: Upload portable application
+          if (!(Test-Path $destination)) {
+            Copy-Item $source $destination
+          }
+
+          if (!(Test-Path $destination)) {
+            throw "AutoOC.dll is missing from publish output."
+          }
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $output = "artifacts/UXTU-Portable"
+
+          if (!(Get-ChildItem $output -Filter "*.exe" -File)) {
+            throw "Application executable is missing."
+          }
+
+          if (!(Test-Path "$output/AutoOC.dll")) {
+            throw "AutoOC.dll is missing."
+          }
+
+          Write-Host "Build output:"
+          Get-ChildItem $output | Format-Table Name, Length
+
+      - name: Create Portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "artifacts/UXTU-Portable/*" `
+            -DestinationPath "artifacts/UXTU-Portable-win-x64.zip" `
+            -CompressionLevel Optimal
+
+      - name: Upload Portable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: UXTU-Portable-win-x64-${{ github.sha }}
+          name: UXTU-Portable-win-x64
           path: artifacts/UXTU-Portable-win-x64.zip
           if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
+          retention-days: 30
 
-      - name: Upload build output
+      - name: Upload Portable folder
         uses: actions/upload-artifact@v4
         with:
-          name: UXTU-Build-Output-win-x64-${{ github.sha }}
+          name: UXTU-Portable-Files-win-x64
           path: artifacts/UXTU-Portable/
           if-no-files-found: error
           compression-level: 6
-          retention-days: 14
+          retention-days: 30
